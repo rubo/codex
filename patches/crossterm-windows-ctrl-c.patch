@@ -1,18 +1,26 @@
 diff --git a/src/event/sys/windows/parse.rs b/src/event/sys/windows/parse.rs
-index 7cb3c6b75..a8c00e5e1 100644
+index 7cb3c6b..0511687 100644
 --- a/src/event/sys/windows/parse.rs
 +++ b/src/event/sys/windows/parse.rs
-@@ -258,6 +258,14 @@ fn parse_key_event_record(key_event: &KeyEventRecord) -> Option<WindowsKeyEvent>
+@@ -258,6 +258,22 @@ fn parse_key_event_record(key_event: &KeyEventRecord) -> Option<WindowsKeyEvent>
          _ => {
              let utf16 = key_event.u_char;
              match utf16 {
-+                // Ctrl+C already carries its identity as ETX. Translating it back
-+                // through the active layout can produce a non-Latin character
-+                // or no character at all. Keep AltGr on the existing path.
-+                0x03 if modifiers.contains(KeyModifiers::CONTROL)
-+                    && !modifiers.contains(KeyModifiers::ALT) =>
++                // Windows reports Ctrl+A to Ctrl+Z as the control codes 0x01..=0x1a on every
++                // keyboard layout. Looking the key up in the active layout instead would report
++                // that layout's character, such as Cyrillic 'с' for Ctrl+C. Caps Lock does not
++                // change the control code, so only Shift selects an uppercase letter. Windows
++                // also reports AltGr as Ctrl+Alt, so Ctrl+Alt keeps the layout lookup below.
++                control_code @ 0x01..=0x1a
++                    if modifiers.contains(KeyModifiers::CONTROL)
++                        && !modifiers.contains(KeyModifiers::ALT) =>
 +                {
-+                    Some(KeyCode::Char('c'))
++                    let letter = char::from(b'a' + (control_code - 1) as u8);
++                    if modifiers.contains(KeyModifiers::SHIFT) {
++                        Some(KeyCode::Char(letter.to_ascii_uppercase()))
++                    } else {
++                        Some(KeyCode::Char(letter))
++                    }
 +                }
                  0x00..=0x1f => {
                      // Some key combinations generate either no u_char value or generate control

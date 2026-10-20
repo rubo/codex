@@ -18,9 +18,36 @@ concurrency:
 
 jobs:
   regression:
+    name: regression (${{ matrix.name }})
     if: github.repository == 'rubo/codex'
     runs-on: windows-2022
-    timeout-minutes: 20
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The crossterm revision Codex pins. Its Windows parser tests live in parse_tests.rs,
+          # which already has one test.
+          - name: Codex pin
+            id: pin
+            repository: openai-oss-forks/crossterm
+            ref: ed1cdab335221515706178d68495bba2aed1924f
+            toolchain: 1.95.0
+            patch: crossterm-windows-ctrl-c
+            parser-tests: 4
+          # The upstream base for a crossterm-rs/crossterm pull request. It has no Windows parser
+          # tests yet, so the tests patch adds the module.
+          - name: crossterm upstream
+            id: upstream
+            repository: crossterm-rs/crossterm
+            ref: db287b8c6873166dfe0bdb625c67e981c77164c2
+            # crossterm's CI lints with the latest stable release.
+            toolchain: stable
+            patch: crossterm-windows-ctrl-c-upstream
+            parser-tests: 3
+    env:
+      PATCH: ../patches/${{ matrix.patch }}
+      PARSER_TESTS: ${{ matrix.parser-tests }}
     defaults:
       run:
         shell: bash
@@ -31,31 +58,35 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Check out Codex's pinned crossterm
+      - name: Check out crossterm
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          repository: openai-oss-forks/crossterm
-          ref: ed1cdab335221515706178d68495bba2aed1924f
+          repository: ${{ matrix.repository }}
+          ref: ${{ matrix.ref }}
           path: crossterm-under-test
           persist-credentials: false
 
-      - name: Install Codex's Rust toolchain on the CI runner
+      - name: Install Rust on the CI runner
         uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
-          components: rustfmt
+          toolchain: ${{ matrix.toolchain }}
+          components: clippy,rustfmt
 
-      - name: Add regression tests and the interactive probe
+      - name: Add regression tests
         run: |
           set -euo pipefail
-          git apply --check ../patches/crossterm-windows-ctrl-c-tests.patch
-          git apply ../patches/crossterm-windows-ctrl-c-tests.patch
-          cp ../scripts/diagnostics/windows_ctrl_c.rs examples/codex_ctrl_c_probe.rs
+          git apply --check "$PATCH-tests.patch"
+          git apply "$PATCH-tests.patch"
           mkdir -p ../ctrl-c-artifacts
+
+      - name: Add the interactive probe
+        if: matrix.id == 'pin'
+        run: cp ../scripts/diagnostics/windows_ctrl_c.rs examples/codex_ctrl_c_probe.rs
 
       - name: Require the regression to fail before the fix
         run: |
           set -euo pipefail
-          test_name=event::sys::windows::parse::tests::preserves_ctrl_c_from_console_records
+          test_name=event::sys::windows::parse::tests::ctrl_letter_control_codes_report_the_letter_on_any_layout
           if cargo test --locked --lib --all-features "$test_name" -- --exact --test-threads 1 > ../ctrl-c-before.log 2>&1; then
             cat ../ctrl-c-before.log
             echo 'The unpatched regression unexpectedly passed.' >&2
@@ -74,6 +105,7 @@ jobs:
           [[ "$output" == *'test result: FAILED. 0 passed; 1 failed;'* ]]
 
       - name: Build the unpatched interactive probe
+        if: matrix.id == 'pin'
         run: |
           set -euo pipefail
           CTRL_C_PROBE_VARIANT=before-fix cargo build --locked --all-features --example codex_ctrl_c_probe
@@ -82,28 +114,44 @@ jobs:
       - name: Apply the parser fix
         run: |
           set -euo pipefail
-          git apply --check ../patches/crossterm-windows-ctrl-c.patch
-          git apply ../patches/crossterm-windows-ctrl-c.patch
+          git apply --check "$PATCH.patch"
+          git apply "$PATCH.patch"
 
       - name: Check formatting of the changed Rust files
+        if: matrix.id == 'pin'
         run: |
           set -euo pipefail
           rustfmt --edition 2024 --check src/event/sys/windows/parse.rs src/event/sys/windows/parse_tests.rs examples/codex_ctrl_c_probe.rs
+
+      # Mirror crossterm's own CI so the pull request does not fail there first.
+      - name: Check formatting and Clippy as crossterm's CI does
+        if: matrix.id == 'upstream'
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo clippy --locked --all-targets --all-features -- -D warnings
+          cargo clippy --locked --all-targets --no-default-features --features events -- -D warnings
 
       - name: Require all Windows parser regressions to pass
         run: |
           set -euo pipefail
           cargo test --locked --lib --all-features event::sys::windows::parse::tests:: -- --test-threads 1 | tee ../ctrl-c-after.log
           output=$(<../ctrl-c-after.log)
-          [[ "$output" == *'test result: ok. 4 passed; 0 failed;'* ]]
+          [[ "$output" == *"test result: ok. $PARSER_TESTS passed; 0 failed;"* ]]
+
+      - name: Run crossterm's full test suite
+        if: matrix.id == 'upstream'
+        run: cargo test --locked --all-targets --all-features -- --test-threads 1
 
       - name: Build the patched interactive probe
+        if: matrix.id == 'pin'
         run: |
           set -euo pipefail
           CTRL_C_PROBE_VARIANT=after-fix cargo build --locked --all-features --example codex_ctrl_c_probe
           cp target/debug/examples/codex_ctrl_c_probe.exe ../ctrl-c-artifacts/ctrl-c-after.exe
 
       - name: Upload the before and after probes
+        if: matrix.id == 'pin'
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: windows-ctrl-c-probes
@@ -117,7 +165,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: windows-ctrl-c-test-logs
+          name: windows-ctrl-c-test-logs-${{ matrix.id }}
           path: ctrl-c-*.log
           if-no-files-found: warn
           retention-days: 7

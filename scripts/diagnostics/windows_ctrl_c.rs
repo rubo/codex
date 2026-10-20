@@ -62,22 +62,22 @@ fn run() -> io::Result<()> {
     let variant = option_env!("CTRL_C_PROBE_VARIANT").unwrap_or("unlabelled");
     println!("Actual crossterm input probe: {variant}.\r");
     writeln!(log, "variant={variant}")?;
-    println!("Press Ctrl+C in each relevant layout. F12 exits.\r");
-    println!("The event should contain Char('c') and CONTROL in every layout.\r");
+    println!("Press Ctrl+C, Ctrl+D and Ctrl+Shift+C in each relevant layout. F12 exits.\r");
+    println!("Each event should contain an ASCII letter and CONTROL in every layout.\r");
     println!("Log: {}\r", path.display());
 
     loop {
         let event = event::read()?;
-        let ctrl_c = matches!(
+        let ctrl_letter = matches!(
             event,
             Event::Key(key)
                 if key.kind == KeyEventKind::Press
-                    && key.code == KeyCode::Char('c')
+                    && matches!(key.code, KeyCode::Char(c) if c.is_ascii_alphabetic())
                     && key.modifiers.contains(KeyModifiers::CONTROL)
                     && !key.modifiers.contains(KeyModifiers::ALT)
         );
-        println!("{event:?} ctrl_c={ctrl_c}\r");
-        writeln!(log, "{event:?} ctrl_c={ctrl_c}")?;
+        println!("{event:?} ctrl_letter={ctrl_letter}\r");
+        writeln!(log, "{event:?} ctrl_letter={ctrl_letter}")?;
         log.flush()?;
         if matches!(event, Event::Key(key) if key.kind == KeyEventKind::Press && key.code == KeyCode::F(12))
         {

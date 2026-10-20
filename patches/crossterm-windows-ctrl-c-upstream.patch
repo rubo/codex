@@ -1,0 +1,42 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 8e4d278..4c1170f 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -48,6 +48,10 @@
+ - Fix `Colors::from(Colored::UnderlineColor(_))` setting the background
+   color. `Colors` has no underline field, so the color is now dropped
+   instead of being applied to the background.
++- Fix Ctrl+letter key events on Windows with non-Latin keyboard layouts
++  such as Russian or Armenian, which reported the layout's character
++  (Ctrl+`с`) instead of the letter (Ctrl+`c`). Ctrl+letter events now
++  also ignore Caps Lock, as they do on Unix.
+ 
+ # Version 0.29
+ 
+diff --git a/src/event/sys/windows/parse.rs b/src/event/sys/windows/parse.rs
+index 6f5dc15..8469c25 100644
+--- a/src/event/sys/windows/parse.rs
++++ b/src/event/sys/windows/parse.rs
+@@ -252,6 +252,22 @@ fn parse_key_event_record(key_event: &KeyEventRecord) -> Option<WindowsKeyEvent>
+         _ => {
+             let utf16 = key_event.u_char;
+             match utf16 {
++                // Windows reports Ctrl+A to Ctrl+Z as the control codes 0x01..=0x1a on every
++                // keyboard layout. Looking the key up in the active layout instead would report
++                // that layout's character, such as Cyrillic 'с' for Ctrl+C. Caps Lock does not
++                // change the control code, so only Shift selects an uppercase letter. Windows
++                // also reports AltGr as Ctrl+Alt, so Ctrl+Alt keeps the layout lookup below.
++                control_code @ 0x01..=0x1a
++                    if modifiers.contains(KeyModifiers::CONTROL)
++                        && !modifiers.contains(KeyModifiers::ALT) =>
++                {
++                    let letter = char::from(b'a' + (control_code - 1) as u8);
++                    if modifiers.contains(KeyModifiers::SHIFT) {
++                        Some(KeyCode::Char(letter.to_ascii_uppercase()))
++                    } else {
++                        Some(KeyCode::Char(letter))
++                    }
++                }
+                 0x00..=0x1f => {
+                     // Some key combinations generate either no u_char value or generate control
+                     // codes. To deliver back a KeyCode::Char(...) event we want to know which
