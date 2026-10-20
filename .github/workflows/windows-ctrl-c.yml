@@ -34,7 +34,7 @@ jobs:
             ref: ed1cdab335221515706178d68495bba2aed1924f
             toolchain: 1.95.0
             patch: crossterm-windows-ctrl-c
-            parser-tests: 4
+            parser-tests: 5
           # The upstream base for a crossterm-rs/crossterm pull request. It has no Windows parser
           # tests yet, so the tests patch adds the module.
           - name: crossterm upstream
@@ -44,7 +44,7 @@ jobs:
             # crossterm's CI lints with the latest stable release.
             toolchain: stable
             patch: crossterm-windows-ctrl-c-upstream
-            parser-tests: 3
+            parser-tests: 4
     env:
       PATCH: ../patches/${{ matrix.patch }}
       PARSER_TESTS: ${{ matrix.parser-tests }}

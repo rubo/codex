@@ -1,14 +1,15 @@
 diff --git a/src/event/sys/windows/parse_tests.rs b/src/event/sys/windows/parse_tests.rs
-index 7534b3c..b33e4f5 100644
+index 7534b3c..0eac5e1 100644
 --- a/src/event/sys/windows/parse_tests.rs
 +++ b/src/event/sys/windows/parse_tests.rs
-@@ -46,3 +46,120 @@ fn preserves_escape_and_literal_characters_from_console_records() {
+@@ -46,3 +46,159 @@ fn preserves_escape_and_literal_characters_from_console_records() {
          }
      }
  }
 +
 +const VK_A: u16 = 0x41;
 +const VK_C: u16 = 0x43;
++const VK_Z: u16 = 0x5a;
 +
 +fn key_record(
 +    virtual_key_code: u16,
@@ -82,19 +83,57 @@ index 7534b3c..b33e4f5 100644
 +}
 +
 +#[test]
++fn ctrl_letter_keys_without_a_character_report_the_virtual_key_letter() {
++    // Some layouts, such as Armenian, report Ctrl+Shift+letter with no character. The virtual
++    // key still names the letter. On a Latin layout the lookup returns the same letter, so
++    // only the Caps Lock records fail if the layout lookup is used instead.
++    let ctrl_shift = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
++    for virtual_key in VK_A..=VK_Z {
++        let letter = char::from(b'a' + (virtual_key - VK_A) as u8);
++        let upper = letter.to_ascii_uppercase();
++        let cases = [
++            (LEFT_CTRL_PRESSED, letter, KeyModifiers::CONTROL),
++            (
++                RIGHT_CTRL_PRESSED | CAPSLOCK_ON,
++                letter,
++                KeyModifiers::CONTROL,
++            ),
++            (LEFT_CTRL_PRESSED | SHIFT_PRESSED, upper, ctrl_shift),
++            (
++                RIGHT_CTRL_PRESSED | SHIFT_PRESSED | CAPSLOCK_ON,
++                upper,
++                ctrl_shift,
++            ),
++        ];
++        for (state, code, modifiers) in cases {
++            for key_down in [true, false] {
++                let record = key_record(virtual_key, 0, state, key_down);
++                assert_eq!(
++                    handle_key_event(record, &mut None),
++                    char_event(code, modifiers, key_down),
++                    "vk {virtual_key:#x}, state {state:#x}",
++                );
++            }
++        }
++    }
++}
++
++#[test]
 +fn ctrl_alt_control_codes_keep_the_layout_lookup() {
 +    // Windows reports AltGr as Ctrl+Alt, and AltGr types layout characters, so Ctrl+Alt must
-+    // not take the control-code path. Virtual key 0 has no layout character, so the layout
++    // not take the Ctrl+letter paths. Virtual key 0 has no layout character, so the layout
 +    // lookup reports no event. This checks which path is taken, not a desired result.
 +    for state in [
 +        LEFT_CTRL_PRESSED | RIGHT_ALT_PRESSED,
 +        RIGHT_CTRL_PRESSED | LEFT_ALT_PRESSED,
 +    ] {
-+        assert_eq!(
-+            handle_key_event(key_record(0, 0x03, state, true), &mut None),
-+            None,
-+            "state {state:#x}",
-+        );
++        for u_char in [0x00, 0x03] {
++            assert_eq!(
++                handle_key_event(key_record(0, u_char, state, true), &mut None),
++                None,
++                "u_char {u_char:#x}, state {state:#x}",
++            );
++        }
 +    }
 +}
 +

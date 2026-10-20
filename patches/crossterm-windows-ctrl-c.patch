@@ -1,26 +1,46 @@
 diff --git a/src/event/sys/windows/parse.rs b/src/event/sys/windows/parse.rs
-index 7cb3c6b..0511687 100644
+index 7cb3c6b..a9c629b 100644
 --- a/src/event/sys/windows/parse.rs
 +++ b/src/event/sys/windows/parse.rs
-@@ -258,6 +258,22 @@ fn parse_key_event_record(key_event: &KeyEventRecord) -> Option<WindowsKeyEvent>
+@@ -197,6 +197,19 @@ fn get_char_for_key(key_event: &KeyEventRecord) -> Option<char> {
+     Some(ch)
+ }
+ 
++/// Returns the Ctrl+letter key code for a letter index, from 0 for A to 25 for Z.
++///
++/// Only Shift selects the uppercase letter. Caps Lock changes neither the control code nor the
++/// virtual key, and on Unix Ctrl+letter with Caps Lock arrives as the same control byte.
++fn ctrl_letter(index: u8, modifiers: KeyModifiers) -> KeyCode {
++    let letter = char::from(b'a' + index);
++    if modifiers.contains(KeyModifiers::SHIFT) {
++        KeyCode::Char(letter.to_ascii_uppercase())
++    } else {
++        KeyCode::Char(letter)
++    }
++}
++
+ fn parse_key_event_record(key_event: &KeyEventRecord) -> Option<WindowsKeyEvent> {
+     let modifiers = KeyModifiers::from(&key_event.control_key_state);
+     let virtual_key_code = key_event.virtual_key_code as i32;
+@@ -257,7 +270,22 @@ fn parse_key_event_record(key_event: &KeyEventRecord) -> Option<WindowsKeyEvent>
+         VK_TAB => Some(KeyCode::Tab),
          _ => {
              let utf16 = key_event.u_char;
++            // Windows reports AltGr as Ctrl+Alt, and AltGr types layout characters, so only Ctrl
++            // without Alt makes a Ctrl+letter shortcut.
++            let ctrl_without_alt =
++                modifiers.contains(KeyModifiers::CONTROL) && !modifiers.contains(KeyModifiers::ALT);
              match utf16 {
-+                // Windows reports Ctrl+A to Ctrl+Z as the control codes 0x01..=0x1a on every
-+                // keyboard layout. Looking the key up in the active layout instead would report
-+                // that layout's character, such as Cyrillic 'с' for Ctrl+C. Caps Lock does not
-+                // change the control code, so only Shift selects an uppercase letter. Windows
-+                // also reports AltGr as Ctrl+Alt, so Ctrl+Alt keeps the layout lookup below.
-+                control_code @ 0x01..=0x1a
-+                    if modifiers.contains(KeyModifiers::CONTROL)
-+                        && !modifiers.contains(KeyModifiers::ALT) =>
-+                {
-+                    let letter = char::from(b'a' + (control_code - 1) as u8);
-+                    if modifiers.contains(KeyModifiers::SHIFT) {
-+                        Some(KeyCode::Char(letter.to_ascii_uppercase()))
-+                    } else {
-+                        Some(KeyCode::Char(letter))
-+                    }
++                // Windows reports Ctrl+A to Ctrl+Z as the control codes 0x01..=0x1a. Looking the
++                // key up in the active layout instead would report that layout's character, such
++                // as Cyrillic 'з' for Ctrl+Z.
++                control_code @ 0x01..=0x1a if ctrl_without_alt => {
++                    Some(ctrl_letter((control_code - 0x01) as u8, modifiers))
++                }
++                // Some layouts, such as Armenian, report Ctrl+Shift+letter with no character. The
++                // virtual key still names the letter: 0x41..=0x5a are VK_A to VK_Z.
++                0x00 if ctrl_without_alt && (0x41..=0x5a).contains(&virtual_key_code) => {
++                    Some(ctrl_letter((virtual_key_code - 0x41) as u8, modifiers))
 +                }
                  0x00..=0x1f => {
                      // Some key combinations generate either no u_char value or generate control
