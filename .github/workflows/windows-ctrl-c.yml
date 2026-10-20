@@ -121,3 +121,120 @@ jobs:
           path: ctrl-c-*.log
           if-no-files-found: warn
           retention-days: 7
+
+  codex-build:
+    if: github.repository == 'rubo/codex'
+    needs: regression
+    runs-on: windows-2022
+    timeout-minutes: 90
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/codex-target
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      CARGO_INCREMENTAL: "0"
+      LIBSQLITE3_FLAGS: SQLITE_DISABLE_INTRINSIC
+      STABLE_GIT_COMMIT: ${{ github.sha }}
+    steps:
+      - name: Check out Codex
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Check out Codex's pinned crossterm
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: openai-oss-forks/crossterm
+          ref: ed1cdab335221515706178d68495bba2aed1924f
+          path: crossterm-under-test
+          persist-credentials: false
+
+      - name: Install Rust on the CI runner
+        uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: x86_64-pc-windows-msvc
+          components: clippy,rustfmt,rust-src
+
+      - name: Configure the native Windows linker
+        uses: ./.github/actions/setup-msvc-env
+        with:
+          target: x86_64-pc-windows-msvc
+
+      - name: Set up Python for artifact verification
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Download and verify Codex's V8 build artifacts
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: x86_64-pc-windows-msvc
+
+      - name: Apply the tested crossterm fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C crossterm-under-test apply --check ../patches/crossterm-windows-ctrl-c.patch
+          git -C crossterm-under-test apply ../patches/crossterm-windows-ctrl-c.patch
+
+      - name: Point this CI build at the patched source
+        shell: pwsh
+        run: |
+          $manifestPath = Join-Path $PWD 'codex-rs/Cargo.toml'
+          $manifest = [IO.File]::ReadAllText($manifestPath)
+          $original = 'crossterm = { git = "https://github.com/openai-oss-forks/crossterm", rev = "ed1cdab335221515706178d68495bba2aed1924f" }'
+          if ([regex]::Matches($manifest, [regex]::Escape($original)).Count -ne 1) {
+            throw 'The crossterm dependency pin has changed; review the override.'
+          }
+          $manifest = $manifest.Replace($original, 'crossterm = { path = "../crossterm-under-test" }')
+          [IO.File]::WriteAllText($manifestPath, $manifest)
+
+          # Keep every resolved dependency version. Only crossterm's source changes.
+          $lockPath = Join-Path $PWD 'codex-rs/Cargo.lock'
+          $lock = [IO.File]::ReadAllText($lockPath)
+          $source = 'source = "git+https://github.com/openai-oss-forks/crossterm?rev=ed1cdab335221515706178d68495bba2aed1924f#ed1cdab335221515706178d68495bba2aed1924f"'
+          $pattern = '(?m)^' + [regex]::Escape($source) + '\r?\n'
+          if ([regex]::Matches($lock, $pattern).Count -ne 1) {
+            throw 'The crossterm lock entry has changed; review the override.'
+          }
+          [IO.File]::WriteAllText($lockPath, [regex]::Replace($lock, $pattern, ''))
+          git diff -- codex-rs/Cargo.toml codex-rs/Cargo.lock
+          if ($LASTEXITCODE -ne 0) { throw 'Could not display the dependency override.' }
+
+      - name: Build Codex and its Windows helper executables
+        shell: bash
+        working-directory: codex-rs
+        run: |
+          set -euo pipefail
+          cargo build --locked --profile dev-small --target x86_64-pc-windows-msvc --timings \
+            --bin codex \
+            --bin codex-code-mode-host \
+            --bin codex-responses-api-proxy \
+            --bin codex-windows-sandbox-setup \
+            --bin codex-windows-sandbox-service \
+            --bin codex-command-runner \
+            --bin codex-app-server \
+            2>&1 | tee ../codex-windows-build.log
+
+      - name: Check that the CLI starts
+        shell: pwsh
+        run: |
+          & ./codex-target/x86_64-pc-windows-msvc/dev-small/codex.exe --version
+          if ($LASTEXITCODE -ne 0) { throw 'The built Codex executable could not start.' }
+
+      - name: Upload the patched Windows Codex build
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: codex-windows-ctrl-c
+          path: codex-target/x86_64-pc-windows-msvc/dev-small/*.exe
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload build logs and timings
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: codex-windows-ctrl-c-build-logs
+          path: |
+            codex-windows-build.log
+            codex-target/cargo-timings/*.html
+          if-no-files-found: warn
+          retention-days: 7
