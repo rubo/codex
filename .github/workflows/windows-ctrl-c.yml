@@ -1,0 +1,123 @@
+name: Windows Ctrl+C investigation
+
+on:
+  push:
+    branches: [fix/windows-ctrl-c]
+    paths:
+      - .github/workflows/windows-ctrl-c.yml
+      - patches/crossterm-windows-ctrl-c*.patch
+      - scripts/diagnostics/windows_ctrl_c.rs
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-ctrl-c-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  regression:
+    if: github.repository == 'rubo/codex'
+    runs-on: windows-2022
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+        working-directory: crossterm-under-test
+    steps:
+      - name: Check out the investigation
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Check out Codex's pinned crossterm
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: openai-oss-forks/crossterm
+          ref: ed1cdab335221515706178d68495bba2aed1924f
+          path: crossterm-under-test
+          persist-credentials: false
+
+      - name: Install Codex's Rust toolchain on the CI runner
+        uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          components: rustfmt
+
+      - name: Add regression tests and the interactive probe
+        run: |
+          set -euo pipefail
+          git apply --check ../patches/crossterm-windows-ctrl-c-tests.patch
+          git apply ../patches/crossterm-windows-ctrl-c-tests.patch
+          cp ../scripts/diagnostics/windows_ctrl_c.rs examples/codex_ctrl_c_probe.rs
+          mkdir -p ../ctrl-c-artifacts
+
+      - name: Require the regression to fail before the fix
+        run: |
+          set -euo pipefail
+          test_name=event::sys::windows::parse::tests::preserves_ctrl_c_from_console_records
+          if cargo test --locked --lib --all-features "$test_name" -- --exact --test-threads 1 > ../ctrl-c-before.log 2>&1; then
+            cat ../ctrl-c-before.log
+            echo 'The unpatched regression unexpectedly passed.' >&2
+            exit 1
+          else
+            result=$?
+          fi
+          cat ../ctrl-c-before.log
+          if [[ "$result" != 101 ]]; then
+            echo "Expected test failure exit 101, got $result." >&2
+            exit 1
+          fi
+          output=$(<../ctrl-c-before.log)
+          # A compile failure or zero discovered tests does not prove regression coverage.
+          [[ "$output" == *"test $test_name ... FAILED"* ]]
+          [[ "$output" == *'test result: FAILED. 0 passed; 1 failed;'* ]]
+
+      - name: Build the unpatched interactive probe
+        run: |
+          set -euo pipefail
+          CTRL_C_PROBE_VARIANT=before-fix cargo build --locked --all-features --example codex_ctrl_c_probe
+          cp target/debug/examples/codex_ctrl_c_probe.exe ../ctrl-c-artifacts/ctrl-c-before.exe
+
+      - name: Apply the parser fix
+        run: |
+          set -euo pipefail
+          git apply --check ../patches/crossterm-windows-ctrl-c.patch
+          git apply ../patches/crossterm-windows-ctrl-c.patch
+
+      - name: Check formatting of the changed Rust files
+        run: |
+          set -euo pipefail
+          rustfmt --edition 2024 --check src/event/sys/windows/parse.rs src/event/sys/windows/parse_tests.rs examples/codex_ctrl_c_probe.rs
+
+      - name: Require all Windows parser regressions to pass
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib --all-features event::sys::windows::parse::tests:: -- --test-threads 1 | tee ../ctrl-c-after.log
+          output=$(<../ctrl-c-after.log)
+          [[ "$output" == *'test result: ok. 4 passed; 0 failed;'* ]]
+
+      - name: Build the patched interactive probe
+        run: |
+          set -euo pipefail
+          CTRL_C_PROBE_VARIANT=after-fix cargo build --locked --all-features --example codex_ctrl_c_probe
+          cp target/debug/examples/codex_ctrl_c_probe.exe ../ctrl-c-artifacts/ctrl-c-after.exe
+
+      - name: Upload the before and after probes
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: windows-ctrl-c-probes
+          path: |
+            ctrl-c-artifacts/*.exe
+            scripts/diagnostics/windows_ctrl_c.rs
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: windows-ctrl-c-test-logs
+          path: ctrl-c-*.log
+          if-no-files-found: warn
+          retention-days: 7

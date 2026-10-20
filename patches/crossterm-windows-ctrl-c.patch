@@ -1,0 +1,19 @@
+diff --git a/src/event/sys/windows/parse.rs b/src/event/sys/windows/parse.rs
+index 7cb3c6b75..a8c00e5e1 100644
+--- a/src/event/sys/windows/parse.rs
++++ b/src/event/sys/windows/parse.rs
+@@ -258,6 +258,14 @@ fn parse_key_event_record(key_event: &KeyEventRecord) -> Option<WindowsKeyEvent>
+         _ => {
+             let utf16 = key_event.u_char;
+             match utf16 {
++                // Ctrl+C already carries its identity as ETX. Translating it back
++                // through the active layout can produce a non-Latin character
++                // or no character at all. Keep AltGr on the existing path.
++                0x03 if modifiers.contains(KeyModifiers::CONTROL)
++                    && !modifiers.contains(KeyModifiers::ALT) =>
++                {
++                    Some(KeyCode::Char('c'))
++                }
+                 0x00..=0x1f => {
+                     // Some key combinations generate either no u_char value or generate control
+                     // codes. To deliver back a KeyCode::Char(...) event we want to know which
